@@ -1,0 +1,1 @@
+# Regex extraction of plugin file content
