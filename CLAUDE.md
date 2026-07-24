@@ -21,20 +21,34 @@ there were deliberate trade-offs, not defaults.
 
 `docs/ARCHITECTURE.md` now tracks the actual file layout (`tools/`, `utils/`) and has
 an "Implementation status" table — check that table for what's built vs. stub before
-assuming a piece exists. Short version: `tools/search.py` is implemented; `main.py` is
-an unrelated `uv init` leftover; everything else in the pipeline (`tools/extract.py`,
-`tools/explain.py`, `utils/llm.py`'s `complete()` seam, `utils/cheatsheet.md`,
-pipeline orchestration, `app.py`'s actual handler) is still a stub or unwritten.
+assuming a piece exists. Short version: `tools/search.py`, `tools/extract.py`, and
+`utils/nasl_patterns.py` are implemented; `main.py` is an unrelated `uv init` leftover.
+`app.py` is wired for `search → extract` (orchestration inline, no `pipeline.py`) and
+shows the raw extraction as a stand-in brief in the Chainlit UI — `tools/explain.py`
+and `utils/llm.py`'s `complete()` seam (the actual LLM pass) and `utils/cheatsheet.md`
+are still stubs, so there's no real `tech_brief` yet, just the deterministic facts.
+
+`test.nasl` at the repo root is a real plugin (39465, `torture_cgi_command_exec.nasl`
+from the mirror) kept as a dev fixture — `tools/extract.py`'s `__main__` block runs
+against it by default, and it's the file every extraction pattern was grounded against.
+It's the reason the regex work is trustworthy without needing the full mirror checked
+out locally.
 
 ## Commands
 
 This project uses `uv` (Python >=3.13, see `.python-version`).
 
 ```bash
-uv sync                        # install dependencies from pyproject.toml / uv.lock
-uv run chainlit run app.py -w  # run the Chainlit dev server (auto-reload)
-uv run python tools/search.py  # exercise the search/extract stub directly (has a __main__ block)
+uv sync                          # install dependencies from pyproject.toml / uv.lock
+uv run chainlit run app.py -w    # run the Chainlit dev server (auto-reload)
+uv run python -m tools.extract   # run extract() against test.nasl and pprint the result
+uv run python -m tools.search 39465  # ripgrep the mirror for a plugin ID (needs PLUGINS_DIR)
 ```
+
+Run these with `-m` (not a bare script path) — `tools/extract.py` imports
+`utils.nasl_patterns`, a sibling package, which only resolves when Python treats the
+repo root as the import root. `python tools/extract.py` puts `tools/` itself on
+`sys.path` instead and the import fails.
 
 There is no test suite, lint config, or CI configured yet.
 
@@ -56,8 +70,9 @@ sudo apt install ripgrep
   version, and provisioning it is a deployment concern, not a build-time one — see
   `docs/ARCHITECTURE.md` "Plugins mirror"). For local dev, `PLUGINS_DIR` just needs to
   point at a handful of sample `.nasl` files, not the full mirror.
-- Without `PLUGINS_DIR` set and populated, `tools/search.py` lookups will fail/return
-  `None`.
+- If `PLUGINS_DIR` is unset, `tools/search.py`'s `plugin_search()` raises `RuntimeError`
+  rather than returning `None` — `None` is reserved for "ripgrep ran and genuinely found
+  no matching plugin," which must stay distinguishable from a broken environment.
 
 ## Architecture (target design, per docs/ARCHITECTURE.md)
 
@@ -68,7 +83,9 @@ deterministic extraction has already gathered the facts that must be right:
 ```
 tech types plugin_id → app.py → pipeline orchestration (planned)
   → tools/search.py: ripgrep `script_id(<id>)` over the mirror → file path
-  → tools/extract.py: regex-split file into header/body, lift script_name/CVE/
+      (id → path only; anything past that is extract.py's job)
+  → tools/extract.py: regex-split file into header/body (patterns from
+                       utils/nasl_patterns.py), lift script_name/CVE/CWE/xrefs/
                        synopsis/description/solution/risk_factor, detect FP signals
   → tools/explain.py + utils/llm.py: prompt (extracted dict + cheatsheet.md)
                                        → model → tech_brief
@@ -77,15 +94,29 @@ tech types plugin_id → app.py → pipeline orchestration (planned)
 
 Key design invariants to preserve when extending this:
 
+- **One job per file.** `tools/search.py` only turns a plugin ID into a file path.
+  Everything about reading *that* file's content belongs in `tools/extract.py`
+  (patterns in `utils/nasl_patterns.py`) — don't let header/body-splitting or
+  metadata regex creep back into `search.py`; that duplication is what made the two
+  files drift out of sync before.
 - **Deterministic-vs-LLM split is intentional.** Anything mechanically extractable
   from the `.nasl` file (IDs, CVEs, severity, Tenable's own synopsis/solution text,
   `AUDIT_*`/`report_paranoia` false-positive signals) must come from regex extraction
   in `tools/extract.py`, never from the model. The LLM is only trusted for the one part
   that needs real comprehension: what the plugin injects and what response makes it
   fire.
-- **Banner-vs-active is the core false-positive discriminator**: a check that
-  version-compares a banner/KB value is FP-prone; a check that sends a payload and
-  matches the response is reliable. This distinction should surface in every brief.
+- **Banner-vs-active is a best-effort deterministic signal, not a guaranteed one.**
+  `tools/extract.py`'s `detection_style` keyword-matches `ver_compare`/`vcf::` (banner)
+  vs. `http_send_recv*`/`send(data:...)` (active), but active checks that delegate
+  through an include (e.g. `torture_cgi_command_exec.nasl` via `torture_cgi.inc`) match
+  neither and correctly come back `"unknown"`. Don't "fix" that by widening the
+  keywords — a broader match (e.g. matching on `get_kb_item` alone) produces false
+  positives on real files (see `test.nasl`, which calls `get_kb_item` for OS detection,
+  not a version compare). Leave the ambiguous cases for the LLM pass to actually read.
+- **Severity has two call shapes.** Older plugins call `security_hole(port)` directly;
+  `vcf::`-based plugins pass severity as an uppercase constant argument instead
+  (`severity:SECURITY_HOLE`, no call/parens) — both must be matched, and the
+  `risk_factor` attribute is the fallback when neither appears in the body.
 - **Model access is behind one seam** (`utils/llm.py`'s intended `complete()`
   function) so the provider (Claude vs. Gemini) is swappable and nothing upstream
   depends on which one is active.

@@ -14,3 +14,7 @@
   can be used for cost/usage monitoring. 
 - **Cross Refrencing:** The `.nasl` documents contain helpful see also urls which link to docs, we could extract
     those and have the agent web_search those urls to pull the additional context.
+- **`.nbin` Support**: Right now we dont.
+- **National Vulnerabilities Database Integration:** Build out a custom tool(s) that hook to the NVD api for 
+    a more comprehensive overview.
+        - **This could also be setup with RAG and embed ALL of the raw plugin files into the rag database.**

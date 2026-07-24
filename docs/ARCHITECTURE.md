@@ -51,12 +51,16 @@ Actual layout (this is `uv`-managed — `pyproject.toml` / `uv.lock`, not
 ```
 scan-agent/
 ├── app.py                # Chainlit entry point (on_message handler)
+├── test.nasl             # real plugin (39465, CGI Generic Command Execution) kept
+│                          # as a dev fixture — extract.py's __main__ runs against it
 ├── tools/
-│   ├── search.py         # plugin_search(id) → path | None   (ripgrep)
-│   │                     # + extract_nasl(path), parse_header(header), list_plugins()
-│   ├── extract.py        # extract(path) → dict {metadata, signals, body}   [stub]
+│   ├── search.py         # plugin_search(id) → path | None   (ripgrep) — id → path,
+│   │                     # nothing else; extract.py owns everything past that
+│   ├── extract.py        # extract(path) → dict {metadata, fp_signals, severity, body}
 │   └── explain.py        # explain_plugin(data) → tech_brief, the LLM pass  [stub]
 ├── utils/
+│   ├── nasl_patterns.py  # every regex + the STRING/unquote() string-literal helpers,
+│   │                     # so tools/extract.py just applies patterns and shapes results
 │   ├── llm.py            # Claude API seam (client init only so far)        [stub]
 │   ├── build_index.py    # optional {id: path} index via grep, for a future
 │   │                     # sub-millisecond lookup path; not currently wired in
@@ -80,20 +84,26 @@ int → orchestration calls `tools/search.py` (id → path), `tools/extract.py`
 (path → dict), and `tools/explain.py` (dict → brief, via `utils/llm.py` +
 `utils/cheatsheet.md`) → `app.py` sends the brief back.
 
+This is a fixed pipeline, not a tool-calling agent — `app.py` calls these functions
+directly in a set order. "Tools" here just names the `tools/` directory; the model
+never chooses whether or how to call `search`/`extract`, and that's deliberate (see
+"Design decisions & rationale" below).
+
 ## Implementation status
 
 Kept here (rather than only in `CLAUDE.md`) so it stays next to the design it tracks.
 
 | Piece | Status |
 |---|---|
-| `tools/search.py` | Implemented: ripgrep lookup, header/body split, partial header regex parse |
-| `tools/extract.py` | Stub — FP-signal + metadata regex extraction not yet written |
+| `tools/search.py` | Implemented: `plugin_search(id)` only — id → path, nothing else |
+| `tools/extract.py` | Implemented: metadata, FP signals, severity — see "The explanation engine" |
+| `utils/nasl_patterns.py` | Implemented: all regex patterns `tools/extract.py` applies |
 | `tools/explain.py` | Stub — prompt assembly + LLM call not yet written |
 | `utils/llm.py` | Stub — `Anthropic` client is instantiated; no `complete()` seam yet |
 | `utils/build_index.py` | Implemented, optional, not wired into the app |
 | `utils/cheatsheet.md` | Empty — NASL cheat sheet content below still needs to move here |
-| `app.py` | Placeholder echo handler; not yet calling into `tools/` |
-| Pipeline orchestration | Not written yet (no `pipeline.py` or equivalent) |
+| `app.py` | Wired for `search → extract`; shows raw extraction as a stand-in brief since there's no `explain()` yet to call. Orchestration lives inline in `app.py`, not a separate `pipeline.py`. |
+| Pipeline orchestration | Inline in `app.py` (search → extract only); will likely move to its own module once `explain.py` adds a third step |
 | `evals/known_plugins/` | Not created yet |
 | Plugins mirror | Deliberately not in the repo (see below) |
 
@@ -113,16 +123,19 @@ is available if sub-millisecond lookups are ever needed, but at ripgrep's speed 
 optional for v1.
 
 Search is scoped to `.nasl` only. A miss (no `.nasl` match) is treated as "not
-supported in v1" — see `.nbin` below.
+supported in v1" — see `.nbin` below. `plugin_search()` returns `None` only for a
+genuine "no plugin has that ID" miss (ripgrep exit code 1); anything else (missing
+`PLUGINS_DIR`, `rg` not installed, permissions) raises instead of silently looking
+like a miss — a tech mid-call shouldn't see "not found" for a broken environment.
 
-### tools/extract.py — the deterministic pass (not yet written)
+### tools/extract.py — the deterministic pass
 
-Will split the file on the description block (`exit(0);`) into `header` (metadata)
-and `body` (runtime logic) — `tools/search.py` already has this logic in
-`extract_nasl()` and should be the starting point — then pull with regex the things
-that must be right and are mechanically extractable, never trusting the model with
-anything it can extract itself. See "The explanation engine" for the fields and
-signals.
+Splits the file on the description block (tolerant of spacing — `exit ( 0 ) ;` still
+splits correctly) into `header` (metadata) and `body` (runtime logic), then pulls with
+regex the things that must be right and are mechanically extractable, never trusting
+the model with anything it can extract itself. The regexes themselves live in
+`utils/nasl_patterns.py`; this file just applies them and shapes the result. See "The
+explanation engine" for the fields and signals.
 
 ### tools/explain.py + utils/llm.py — the LLM pass (not yet written)
 
@@ -164,14 +177,26 @@ NASL syntax is regular enough to parse with regex:
 - **False-positive signals** — the reason this tool exists:
   - `if (report_paranoia < 2) audit(AUDIT_PARANOID)` — the check only runs in
     paranoid mode, i.e. Nessus itself flags it as false-positive-prone. Often the
-    single most important thing to tell a customer.
+    single most important thing to tell a customer. The comparison direction matters:
+    `report_paranoia > 1` (seen in `torture_cgi_command_exec.nasl`, widening which OS
+    payloads run) is a different use of the same variable and must not be read as
+    this gate.
   - other `AUDIT_*` bailouts (e.g. `AUDIT_VER_NOT_GRANULAR`) — reasons a result is soft.
   - **banner vs. active** — the key discriminator. A check that reads a version off a
-    header/KB and version-compares is a *banner check* (FP-prone on backported
-    patches). A check that builds a payload and matches the response is an *active
-    check* (reliable).
-- **Severity** — `security_hole` → high, `security_warning` → medium,
-  `security_note` → low/info; the `risk_factor` attribute states it outright.
+    header/KB and version-compares (`ver_compare`, `vcf::`, `check_version`) is a
+    *banner check* (FP-prone on backported patches). A check that sends a payload and
+    matches the response (`http_send_recv*`, `send(data:...)`) is an *active check*
+    (reliable). This is a **best-effort** keyword match, not a guaranteed read: active
+    checks that delegate through an include (e.g. `torture_cgi_command_exec.nasl`
+    calling `torture_cgi_init()`/`torture_cgis()` from `torture_cgi.inc`) show neither
+    keyword and correctly come back `unknown` rather than a wrong guess — that's the
+    genuinely-needs-comprehension case the LLM pass exists for.
+- **Severity** — `security_hole(...)` → high, `security_warning(...)` → medium,
+  `security_note(...)` → low. Modern plugins built on `vcf::` helpers
+  (`vcf::check_version_and_report(..., severity:SECURITY_HOLE)`) pass the same
+  severity as an **uppercase constant, no call/parens** — both forms are matched. If
+  neither appears, fall back to the `risk_factor` attribute rather than reporting no
+  severity at all.
 
 ### LLM pass (needs comprehension)
 
@@ -319,10 +344,9 @@ is out of scope for v1 regardless of which option is used.
 
 ## Open questions / next steps
 
-Unwritten pieces of the v1 pipeline, roughly in the order they unblock each other:
+Remaining unwritten pieces of the v1 pipeline, roughly in the order they unblock
+each other (`tools/search.py` and `tools/extract.py` are done):
 
-- **`tools/extract.py`** — the deterministic pass (metadata lift + FP signals). Build
-  on `extract_nasl()` / `parse_header()` already in `tools/search.py`.
 - **`utils/cheatsheet.md`** — move the NASL cheat sheet content (above) into the file;
   currently it's an empty stub.
 - **`utils/llm.py`'s `complete()` seam** — right now the file only instantiates the
