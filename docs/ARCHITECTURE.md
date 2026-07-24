@@ -19,11 +19,11 @@ explanation from data the pipeline already gathered.
 ```mermaid
 flowchart TD
     tech["Scan tech<br/>(browser, HQ VLAN / VPN only)"] -->|"plugin_id (validated int)"| ui["Chainlit app<br/>app.py"]
-    ui --> pipe["pipeline.run(plugin_id)"]
-    pipe --> search["search.py<br/>ripgrep script_id → path"]
-    search --> extract["extract.py<br/>metadata + FP signals + raw body"]
-    extract --> explain["explain.py<br/>prompt + cheat sheet → LLM"]
-    explain --> llm["llm.py<br/>Claude API (model-swappable)"]
+    ui --> pipe["pipeline orchestration<br/>(planned — not yet a file)"]
+    pipe --> search["tools/search.py<br/>ripgrep script_id → path"]
+    search --> extract["tools/extract.py<br/>metadata + FP signals + raw body"]
+    extract --> explain["tools/explain.py<br/>prompt + cheat sheet → LLM"]
+    explain --> llm["utils/llm.py<br/>Claude API (model-swappable)"]
     search -.reads.-> mirror[("Plugins mirror<br/>.nasl files on disk")]
     extract -.reads.-> mirror
     llm --> ui
@@ -40,35 +40,66 @@ flowchart TD
   off the event loop with `cl.make_async`, so the backend itself stays synchronous.
 - **Data** — a local mirror of the Nessus plugins directory. No live scanner
   connection, no Nessus API (see Environment).
-- **Model** — reached through a one-function seam (`llm.py`) so Claude or Gemini is a
-  one-line swap. Nothing above it depends on the choice.
+- **Model** — reached through a one-function seam (`utils/llm.py`) so Claude or
+  Gemini is a one-line swap. Nothing above it depends on the choice.
 
 ## Project structure
 
+Actual layout (this is `uv`-managed — `pyproject.toml` / `uv.lock`, not
+`requirements.txt`):
+
 ```
 scan-agent/
-├── app.py            # Chainlit entry: on_message → validate int → run() → reply
-├── pipeline.py       # run(plugin_id): search → extract → explain
-├── search.py         # plugin_search(id) → path | None   (ripgrep)
-├── extract.py        # extract(path) → dict {metadata, signals, body}
-├── explain.py        # explain_plugin(data) → tech_brief   (the LLM pass)
-├── llm.py            # complete(prompt, system) → str   (Claude API seam)
-├── cheatsheet.md     # NASL reference, injected into the prompt
-├── build_index.py    # optional {id: path} index, run on plugin sync
-├── evals/
-│   └── known_plugins/ # verified plugin + expected-answer pairs (trust + drift gate)
-├── .env              # PLUGINS_DIR, ANTHROPIC_API_KEY
-└── requirements.txt  # chainlit, anthropic, python-dotenv
+├── app.py                # Chainlit entry point (on_message handler)
+├── tools/
+│   ├── search.py         # plugin_search(id) → path | None   (ripgrep)
+│   │                     # + extract_nasl(path), parse_header(header), list_plugins()
+│   ├── extract.py        # extract(path) → dict {metadata, signals, body}   [stub]
+│   └── explain.py        # explain_plugin(data) → tech_brief, the LLM pass  [stub]
+├── utils/
+│   ├── llm.py            # Claude API seam (client init only so far)        [stub]
+│   ├── build_index.py    # optional {id: path} index via grep, for a future
+│   │                     # sub-millisecond lookup path; not currently wired in
+│   └── cheatsheet.md     # NASL reference, meant to be injected into the prompt [empty]
+├── plugins/
+│   └── nessus.license    # only file checked in; the actual .nasl mirror is not
+│                          # in the repo — see "Plugins mirror" below
+├── docs/
+│   └── ARCHITECTURE.md   # this file
+├── .env                  # PLUGINS_DIR, ANTHROPIC_API_KEY, Nessus keys (git-ignored)
+└── pyproject.toml         # chainlit, anthropic, dotenv
 ```
 
-Data flow straight through it: the tech types `39465` → `app.py` validates it's an
-int → `pipeline.run()` calls `search.py` (id → path), `extract.py` (path → dict), and
-`explain.py` (dict → brief, via `llm.py` + `cheatsheet.md`) → `app.py` sends the brief
-back.
+`main.py` is a leftover `uv init` template stub and isn't part of the app. There is no
+`pipeline.py` yet — `search → extract → explain` orchestration is still to be written
+(currently `app.py` doesn't call any of `tools/` yet either). `evals/known_plugins/`
+doesn't exist yet; see "Open questions / next steps."
+
+Target data flow once wired up: the tech types `39465` → `app.py` validates it's an
+int → orchestration calls `tools/search.py` (id → path), `tools/extract.py`
+(path → dict), and `tools/explain.py` (dict → brief, via `utils/llm.py` +
+`utils/cheatsheet.md`) → `app.py` sends the brief back.
+
+## Implementation status
+
+Kept here (rather than only in `CLAUDE.md`) so it stays next to the design it tracks.
+
+| Piece | Status |
+|---|---|
+| `tools/search.py` | Implemented: ripgrep lookup, header/body split, partial header regex parse |
+| `tools/extract.py` | Stub — FP-signal + metadata regex extraction not yet written |
+| `tools/explain.py` | Stub — prompt assembly + LLM call not yet written |
+| `utils/llm.py` | Stub — `Anthropic` client is instantiated; no `complete()` seam yet |
+| `utils/build_index.py` | Implemented, optional, not wired into the app |
+| `utils/cheatsheet.md` | Empty — NASL cheat sheet content below still needs to move here |
+| `app.py` | Placeholder echo handler; not yet calling into `tools/` |
+| Pipeline orchestration | Not written yet (no `pipeline.py` or equivalent) |
+| `evals/known_plugins/` | Not created yet |
+| Plugins mirror | Deliberately not in the repo (see below) |
 
 ## Pipeline components
 
-### search.py — locate the plugin
+### tools/search.py — locate the plugin
 
 `.nasl` source exists only as files on the scanner; there is no API for it. The
 lookup greps the mirror for `script_id(<plugin_id>)` — the same method techs use by
@@ -77,25 +108,28 @@ plugins whose text happens to contain the number.
 
 The directory holds ~309,377 files, so tool choice matters: plain `grep` takes 30+
 seconds, **ripgrep takes 0–5s** (`sudo apt install ripgrep`). ripgrep is the v1
-search. `build_index.py` (a one-pass `{id: path}` map, rebuilt on plugin sync) is
-available if sub-millisecond lookups are ever needed, but at ripgrep's speed it's
+search. `utils/build_index.py` (a one-pass `{id: path}` map, rebuilt on plugin sync)
+is available if sub-millisecond lookups are ever needed, but at ripgrep's speed it's
 optional for v1.
 
 Search is scoped to `.nasl` only. A miss (no `.nasl` match) is treated as "not
 supported in v1" — see `.nbin` below.
 
-### extract.py — the deterministic pass
+### tools/extract.py — the deterministic pass (not yet written)
 
-Splits the file on the description block (`exit(0);`) into `header` (metadata) and
-`body` (runtime logic), then pulls with regex the things that must be right and are
-mechanically extractable — never trusting the model with anything it can extract
-itself. See "The explanation engine" for the fields and signals.
+Will split the file on the description block (`exit(0);`) into `header` (metadata)
+and `body` (runtime logic) — `tools/search.py` already has this logic in
+`extract_nasl()` and should be the starting point — then pull with regex the things
+that must be right and are mechanically extractable, never trusting the model with
+anything it can extract itself. See "The explanation engine" for the fields and
+signals.
 
-### explain.py + llm.py — the LLM pass
+### tools/explain.py + utils/llm.py — the LLM pass (not yet written)
 
-Assembles a prompt from the extracted dict plus `cheatsheet.md`, calls the model
-through `llm.py`'s `complete()` seam, and returns the `tech_brief`. `llm.py` is the
-only file that knows which provider is in use.
+Will assemble a prompt from the extracted dict plus `utils/cheatsheet.md`, call the
+model through `utils/llm.py`'s `complete()` seam (not yet written — currently that
+file only instantiates the `Anthropic` client), and return the `tech_brief`.
+`utils/llm.py` should remain the only file that knows which provider is in use.
 
 ### NVD (supplementary)
 
@@ -187,7 +221,9 @@ tech_brief: {
 
 A one-page reference (~40 lines) fed to the LLM pass. Small precisely because NASL is
 regular — it teaches the niche idioms and points at where the good text already lives.
-Lives in `cheatsheet.md`; candidate for a dedicated skill file later.
+Meant to live in `utils/cheatsheet.md`, which is currently an empty stub — the content
+below is the reference copy until it's moved there. Candidate for a dedicated skill
+file later.
 
 **1. Liftable metadata — where ready-made text lives**
 - `script_name`, `script_id`, `script_cve_id`, `script_xref` — name and references
@@ -230,7 +266,7 @@ Captured so we don't relitigate them.
 | ripgrep over grep | 309k files: grep 30s+, ripgrep 0–5s. Same method, usable latency. |
 | Parse-then-explain (deterministic + LLM) | Critical facts are mechanically extractable and must be right; only the trigger logic needs comprehension. Don't make the model do the parser's job. |
 | Quote source lines in the trigger explanation | Turns "trust the AI" into "verify at a glance" for a code-literate tech, and discourages invented payloads. |
-| Model-agnostic behind `llm.py` | Avoids vendor lock-in and lets us evaluate models/providers/prompts against the eval set to catch drift or degradation. |
+| Model-agnostic behind `utils/llm.py` | Avoids vendor lock-in and lets us evaluate models/providers/prompts against the eval set to catch drift or degradation. |
 | Single `tech_brief` output | The tech is the one talking to the customer; one brief gives them the understanding plus a plain-language line to relay. No separate register to maintain. |
 
 ## `.nbin` handling (deferred to v2)
@@ -259,21 +295,51 @@ target, so it's firmly post-v1.
   not Security Center — so plugin data comes from the local mirror, not a REST API.
 - **Plugin directory:** `/opt/nessus/lib/nessus/plugins/` (~309,377 files).
 - **Lookup:** ripgrep for `script_id(<plugin_id>)` in that directory.
-- **Mirror / install:** the plugins directory is provisioned in the sandbox by
-  extracting `plugins.tar.gz` (manually downloaded 7/23/2026) into the plugins path.
-  Extraction can be automated; keeping the mirror in sync with source (rsync to the
-  Enterprise scanner, or an API) is out of scope for v1.
+
+### Plugins mirror — deliberately not in this repo
+
+The mirror (`plugins.tar.gz`, manually downloaded 7/23/2026) is ~1GB compressed and
+~309,377 files uncompressed — checking it into git isn't practical, so `.nasl`,
+`*.tar.gz`, and `*.license` are all git-ignored (see `.gitignore`; the `plugins/`
+directory here holds only `nessus.license`). This is intentional, not an oversight:
+provisioning the mirror is a **deployment-time task**, not something needed while the
+pipeline logic itself is being built. `PLUGINS_DIR` in `.env` just needs to point at
+*some* local directory of `.nasl` files during development — it doesn't need to be
+the full 309k-file mirror; a handful of representative plugins is enough to develop
+and exercise `tools/search.py` / `tools/extract.py` / `tools/explain.py` against.
+
+Two provisioning options are on the table for when deployment is actually being
+figured out (not now):
+
+1. Automate installing a free offline Nessus and pulling plugins via the Nessus CLI.
+2. *Probably easier:* extract `plugins.tar.gz` directly into the plugins path.
+
+Keeping the mirror in sync with source (rsync to the Enterprise scanner, or an API)
+is out of scope for v1 regardless of which option is used.
 
 ## Open questions / next steps
 
-- Write `cheatsheet.md` (the NASL reference above) and `explain.py` (the LLM pass) —
-  the last unwritten pieces of the v1 pipeline.
+Unwritten pieces of the v1 pipeline, roughly in the order they unblock each other:
+
+- **`tools/extract.py`** — the deterministic pass (metadata lift + FP signals). Build
+  on `extract_nasl()` / `parse_header()` already in `tools/search.py`.
+- **`utils/cheatsheet.md`** — move the NASL cheat sheet content (above) into the file;
+  currently it's an empty stub.
+- **`utils/llm.py`'s `complete()` seam** — right now the file only instantiates the
+  `Anthropic` client; needs the actual prompt → completion function `tools/explain.py`
+  will call.
+- **`tools/explain.py`** — assembles the prompt from the extracted dict + cheat sheet,
+  calls `complete()`, returns `tech_brief`.
+- **Pipeline orchestration** — something (a `pipeline.py`, or logic directly in
+  `app.py`) to wire search → extract → explain together and replace `app.py`'s current
+  placeholder echo handler.
 - Build the **eval set** under `evals/known_plugins/` — verified plugin + expected
   explanation pairs. It's both the pre-launch trust gate and the ongoing
   drift/degradation check across models, providers, and prompt changes. Cover at
   least: a paranoid-mode plugin, a banner-only check, an active-injection check
   (e.g. `torture_cgi_command_exec`), and a not-supported `.nbin`.
-- Automate `plugins.tar.gz` extraction into the sandbox; later, real sync with source.
+- **Deployment-time, not now:** provisioning the full plugins mirror in the sandbox
+  (see above).
 - **v2:** richer inputs (client/host/environment detail from Gravity); generated
   validation commands (curl / nmap / grep) output *with* per-command explanation and
   impact notes for the tech to run — never executed by the agent. Watch for the model
