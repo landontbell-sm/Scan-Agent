@@ -19,7 +19,7 @@ explanation from data the pipeline already gathered.
 ```mermaid
 flowchart TD
     tech["Scan tech<br/>(browser, HQ VLAN / VPN only)"] -->|"plugin_id (validated int)"| ui["Chainlit app<br/>app.py"]
-    ui --> pipe["pipeline orchestration<br/>(planned — not yet a file)"]
+    ui --> pipe["pipeline orchestration<br/>(inline in app.py's on_message)"]
     pipe --> search["tools/search.py<br/>ripgrep script_id → path"]
     search --> extract["tools/extract.py<br/>metadata + FP signals + raw body"]
     extract --> explain["tools/explain.py<br/>prompt + cheat sheet → LLM"]
@@ -98,12 +98,12 @@ Kept here (rather than only in `CLAUDE.md`) so it stays next to the design it tr
 | `tools/search.py` | Implemented: `plugin_search(id)` only — id → path, nothing else |
 | `tools/extract.py` | Implemented: metadata, FP signals, severity — see "The explanation engine" |
 | `utils/nasl_patterns.py` | Implemented: all regex patterns `tools/extract.py` applies |
-| `tools/explain.py` | Stub — prompt assembly + LLM call not yet written |
-| `utils/llm.py` | Stub — `Anthropic` client is instantiated; no `complete()` seam yet |
+| `tools/explain.py` | Implemented: `build_prompt()` assembles extract() output + the cheat sheet; `explain_plugin()` calls `utils/llm.py` and returns the tech brief text |
+| `utils/llm.py` | Implemented: `respond(prompt)` seam — model defaults to `claude-sonnet-5` (`ANTHROPIC_LLM_MODEL` overrides), handles the `refusal` stop reason explicitly |
 | `utils/build_index.py` | Implemented, optional, not wired into the app |
-| `utils/cheatsheet.md` | Empty — NASL cheat sheet content below still needs to move here |
-| `app.py` | Wired for `search → extract`; shows raw extraction as a stand-in brief since there's no `explain()` yet to call. Orchestration lives inline in `app.py`, not a separate `pipeline.py`. |
-| Pipeline orchestration | Inline in `app.py` (search → extract only); will likely move to its own module once `explain.py` adds a third step |
+| `utils/cheatsheet.md` | Implemented — NASL cheat sheet content, injected into every prompt |
+| `app.py` | Wired end to end: `search → extract → explain` → sends the model's tech brief. No separate `pipeline.py` — orchestration is inline in `app.py`'s message handler. |
+| Pipeline orchestration | Inline in `app.py`, all three steps |
 | `evals/known_plugins/` | Not created yet |
 | Plugins mirror | Deliberately not in the repo (see below) |
 
@@ -137,12 +137,17 @@ the model with anything it can extract itself. The regexes themselves live in
 `utils/nasl_patterns.py`; this file just applies them and shapes the result. See "The
 explanation engine" for the fields and signals.
 
-### tools/explain.py + utils/llm.py — the LLM pass (not yet written)
+### tools/explain.py + utils/llm.py — the LLM pass
 
-Will assemble a prompt from the extracted dict plus `utils/cheatsheet.md`, call the
-model through `utils/llm.py`'s `complete()` seam (not yet written — currently that
-file only instantiates the `Anthropic` client), and return the `tech_brief`.
-`utils/llm.py` should remain the only file that knows which provider is in use.
+`tools/explain.py`'s `build_prompt()` assembles the prompt from `extract()`'s dict
+(deterministic facts framed as ground truth, never to be regenerated) plus
+`utils/cheatsheet.md`; `explain_plugin()` passes that to `utils/llm.py`'s `respond()`
+seam and returns the tech brief text. `utils/llm.py` is the only file that knows
+which provider/model is in use — currently Claude, defaulting to `claude-sonnet-5`
+(override with `ANTHROPIC_LLM_MODEL`). It explicitly checks for the `refusal` stop
+reason rather than blindly reading `response.content`: this app routinely explains
+injection/exploit payloads (that's the whole point), which is exactly the kind of
+content a model's cyber-safety classifiers can decline.
 
 ### NVD (supplementary)
 
@@ -344,24 +349,17 @@ is out of scope for v1 regardless of which option is used.
 
 ## Open questions / next steps
 
-Remaining unwritten pieces of the v1 pipeline, roughly in the order they unblock
-each other (`tools/search.py` and `tools/extract.py` are done):
+The v1 pipeline (`search → extract → explain`, wired into `app.py`) is functionally
+complete end to end. What's left:
 
-- **`utils/cheatsheet.md`** — move the NASL cheat sheet content (above) into the file;
-  currently it's an empty stub.
-- **`utils/llm.py`'s `complete()` seam** — right now the file only instantiates the
-  `Anthropic` client; needs the actual prompt → completion function `tools/explain.py`
-  will call.
-- **`tools/explain.py`** — assembles the prompt from the extracted dict + cheat sheet,
-  calls `complete()`, returns `tech_brief`.
-- **Pipeline orchestration** — something (a `pipeline.py`, or logic directly in
-  `app.py`) to wire search → extract → explain together and replace `app.py`'s current
-  placeholder echo handler.
 - Build the **eval set** under `evals/known_plugins/` — verified plugin + expected
   explanation pairs. It's both the pre-launch trust gate and the ongoing
   drift/degradation check across models, providers, and prompt changes. Cover at
   least: a paranoid-mode plugin, a banner-only check, an active-injection check
   (e.g. `torture_cgi_command_exec`), and a not-supported `.nbin`.
+- No retry/handling yet for the `RuntimeError` `explain_plugin()` raises on a model
+  refusal beyond surfacing the message in the chat — worth revisiting once real usage
+  shows how often it actually happens.
 - **Deployment-time, not now:** provisioning the full plugins mirror in the sandbox
   (see above).
 - **v2:** richer inputs (client/host/environment detail from Gravity); generated

@@ -18,3 +18,5 @@
 - **National Vulnerabilities Database Integration:** Build out a custom tool(s) that hook to the NVD api for 
     a more comprehensive overview.
         - **This could also be setup with RAG and embed ALL of the raw plugin files into the rag database.**
+- **Streaming:** Stream responses for more interactive experience.
+- **Speed:** We need to speed up the search process.

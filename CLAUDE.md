@@ -17,16 +17,15 @@ contracts, the NASL cheat sheet content, and the rationale table — read
 `docs/ARCHITECTURE.md` before making structural changes, since most design decisions
 there were deliberate trade-offs, not defaults.
 
-## Current state (early skeleton)
+## Current state (v1 pipeline complete end to end)
 
-`docs/ARCHITECTURE.md` now tracks the actual file layout (`tools/`, `utils/`) and has
-an "Implementation status" table — check that table for what's built vs. stub before
-assuming a piece exists. Short version: `tools/search.py`, `tools/extract.py`, and
-`utils/nasl_patterns.py` are implemented; `main.py` is an unrelated `uv init` leftover.
-`app.py` is wired for `search → extract` (orchestration inline, no `pipeline.py`) and
-shows the raw extraction as a stand-in brief in the Chainlit UI — `tools/explain.py`
-and `utils/llm.py`'s `complete()` seam (the actual LLM pass) and `utils/cheatsheet.md`
-are still stubs, so there's no real `tech_brief` yet, just the deterministic facts.
+`docs/ARCHITECTURE.md` tracks the actual file layout (`tools/`, `utils/`) and has an
+"Implementation status" table. Short version: `search → extract → explain` is fully
+wired — `app.py` calls all three in sequence (orchestration inline, no `pipeline.py`)
+and sends back the model's real tech brief, not a placeholder. `main.py` is an
+unrelated `uv init` leftover; `utils/build_index.py` is an optional, unused
+alternative lookup strategy. What's actually left is process, not code: no
+`evals/known_plugins/` eval set yet (see ARCHITECTURE.md "Open questions").
 
 `test.nasl` at the repo root is a real plugin (39465, `torture_cgi_command_exec.nasl`
 from the mirror) kept as a dev fixture — `tools/extract.py`'s `__main__` block runs
@@ -74,22 +73,22 @@ sudo apt install ripgrep
   rather than returning `None` — `None` is reserved for "ripgrep ran and genuinely found
   no matching plugin," which must stay distinguishable from a broken environment.
 
-## Architecture (target design, per docs/ARCHITECTURE.md)
+## Architecture (per docs/ARCHITECTURE.md)
 
-The intended flow is a **fixed, linear pipeline**, not a tool-calling agent — there's
-no agent loop or MCP server. Exactly one LLM call happens, at the end, after
-deterministic extraction has already gathered the facts that must be right:
+This is a **fixed, linear pipeline**, not a tool-calling agent — there's no agent
+loop or MCP server. Exactly one LLM call happens, at the end, after deterministic
+extraction has already gathered the facts that must be right:
 
 ```
-tech types plugin_id → app.py → pipeline orchestration (planned)
+tech types plugin_id → app.py's on_message
   → tools/search.py: ripgrep `script_id(<id>)` over the mirror → file path
       (id → path only; anything past that is extract.py's job)
   → tools/extract.py: regex-split file into header/body (patterns from
                        utils/nasl_patterns.py), lift script_name/CVE/CWE/xrefs/
                        synopsis/description/solution/risk_factor, detect FP signals
-  → tools/explain.py + utils/llm.py: prompt (extracted dict + cheatsheet.md)
-                                       → model → tech_brief
-  → app.py sends tech_brief back
+  → tools/explain.py: build_prompt() (extracted dict + utils/cheatsheet.md)
+                       → utils/llm.py's respond() → tech_brief text
+  → app.py sends the tech_brief back
 ```
 
 Key design invariants to preserve when extending this:
@@ -117,9 +116,15 @@ Key design invariants to preserve when extending this:
   `vcf::`-based plugins pass severity as an uppercase constant argument instead
   (`severity:SECURITY_HOLE`, no call/parens) — both must be matched, and the
   `risk_factor` attribute is the fallback when neither appears in the body.
-- **Model access is behind one seam** (`utils/llm.py`'s intended `complete()`
-  function) so the provider (Claude vs. Gemini) is swappable and nothing upstream
-  depends on which one is active.
+- **Model access is behind one seam** (`utils/llm.py`'s `respond(prompt)` function,
+  currently Claude via `client.messages.create`, model defaulting to
+  `claude-sonnet-5` and overridable with `ANTHROPIC_LLM_MODEL`) so the provider is
+  swappable and nothing upstream depends on which one is active.
+- **Check `stop_reason` for `"refusal"` before reading the response.** This app's
+  entire job is explaining injection/exploit payloads, which is exactly the content
+  a model's safety classifiers can decline — `utils/llm.py` raises a `RuntimeError`
+  on refusal rather than silently returning an empty string. Don't remove this check
+  when touching `respond()`.
 - **Require quoted source lines** in the LLM's trigger explanation — this is what
   makes the explanation verifiable by a code-literate tech instead of just trusted.
 - **`.nasl` only in v1.** `.nbin` (compiled NASL) has no public decompiler; a lookup

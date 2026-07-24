@@ -1,17 +1,15 @@
 # Chainlit entrypoint
-#
-# tools/explain.py + utils/llm.py (the LLM pass) aren't written yet, so this
-# runs search -> extract only and shows the raw deterministic extraction as
-# a stand-in brief - enough to verify search/extract work end to end in the
-# actual UI. Swap in the real tech_brief once explain.py exists.
 
 import chainlit as cl
 
+from tools.explain import explain_plugin
 from tools.extract import extract
 from tools.search import plugin_search
+from utils.models import TechBrief
 
 search_async = cl.make_async(plugin_search)
 extract_async = cl.make_async(extract)
+explain_async = cl.make_async(explain_plugin)
 
 
 @cl.on_chat_start
@@ -41,36 +39,53 @@ async def main(message: cl.Message):
         return
 
     data = await extract_async(path)
-    await cl.Message(content=format_interim_brief(plugin_id, path, data)).send()
+
+    try:
+        brief = await explain_async(data)
+    except RuntimeError as e:
+        await cl.Message(content=f"Couldn't generate an explanation: {e}").send()
+        return
+
+    await cl.Message(content=format_tech_brief(plugin_id, data, brief)).send()
 
 
-def format_interim_brief(plugin_id: int, path: str, data: dict) -> str:
+def format_tech_brief(plugin_id: int, data: dict, brief: TechBrief) -> str:
+    """Deterministic facts render directly from extract()'s output - never
+    routed through the model, which only supplies `summary` and `fp_analysis`.
+    """
     meta = data["metadata"]
-    fp = data["fp_signals"]
 
-    def first_attr(name: str) -> str:
+    def first_attr(name: str) -> str | None:
         values = meta["attributes"].get(name)
-        return values[0] if values else "-"
+        return values[0] if values else None
 
-    paranoid = f"yes (threshold {fp['paranoia_threshold']})" if fp["paranoid_only"] else "no"
+    facts = [
+        f"- **Severity:** {data['severity'] or 'unknown'}",
+        f"- **Category:** {meta['category'] or '-'}",
+        f"- **Family:** {meta['family'] or '-'}",
+        f"- **Detection reliability:** {brief.detection_reliability}",
+        f"- **CVEs:** {', '.join(meta['cve_ids']) or 'none'}",
+        f"- **CWEs:** {', '.join(meta['cwe_ids']) or 'none'}",
+    ]
+    if meta["cvss_vector"]:
+        facts.append(f"- **CVSS:** {meta['cvss_vector']}")
+    if meta["script_version"]:
+        facts.append(f"- **Plugin version:** {meta['script_version']}")
+    if meta["xrefs"]:
+        xref_str = ", ".join(f"{x['name']}: {x['value']}" for x in meta["xrefs"])
+        facts.append(f"- **Xrefs:** {xref_str}")
 
-    return "\n".join(
-        [
-            f"**Plugin {plugin_id} — {meta['script_name'] or 'unknown'}**",
-            f"`{path}`",
-            "",
-            f"- Severity: {data['severity'] or 'unknown'}",
-            f"- Category: {meta['category'] or '-'}",
-            f"- Detection style: {fp['detection_style']}",
-            f"- Paranoid-only: {paranoid}",
-            f"- Audit bailouts: {', '.join(fp['audit_bailouts']) or 'none'}",
-            f"- CVEs: {', '.join(meta['cve_ids']) or 'none'}",
-            f"- CWEs: {', '.join(meta['cwe_ids']) or 'none'}",
-            "",
-            f"**Synopsis:** {first_attr('synopsis')}",
-            f"**Solution:** {first_attr('solution')}",
-            "",
-            "_Raw deterministic extraction only — the LLM explanation pass "
-            "(`tools/explain.py`) isn't wired in yet._",
-        ]
-    )
+    solution = first_attr("solution")
+
+    sections = [
+        f"## Plugin {plugin_id} — {meta['script_name'] or 'unknown'}",
+        "\n".join(facts),
+    ]
+    if solution:
+        sections.append(f"**Tenable's solution:** {solution}")
+    sections += [
+        f"**What it does:** {brief.summary}",
+        f"**False-positive analysis:** {brief.fp_analysis}",
+        f"### Raw plugin source\n```\n{data['raw']}\n```",
+    ]
+    return "\n\n".join(sections)
