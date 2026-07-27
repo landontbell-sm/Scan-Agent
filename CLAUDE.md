@@ -24,8 +24,9 @@ there were deliberate trade-offs, not defaults.
 wired — `app.py` calls all three in sequence (orchestration inline, no `pipeline.py`)
 and sends back the model's real tech brief, not a placeholder. `main.py` is an
 unrelated `uv init` leftover; `utils/build_index.py` is an optional, unused
-alternative lookup strategy. What's actually left is process, not code: no
-`evals/known_plugins/` eval set yet (see ARCHITECTURE.md "Open questions").
+alternative lookup strategy. `tests/` covers the deterministic search/extract
+pass; `evals/run_known_plugins.py` is the golden-set check for the LLM pass
+(see ARCHITECTURE.md "Open questions").
 
 `test.nasl` at the repo root is a real plugin (39465, `torture_cgi_command_exec.nasl`
 from the mirror) kept as a dev fixture — `tools/extract.py`'s `__main__` block runs
@@ -42,14 +43,17 @@ uv sync                          # install dependencies from pyproject.toml / uv
 uv run chainlit run app.py -w    # run the Chainlit dev server (auto-reload)
 uv run python -m tools.extract   # run extract() against test.nasl and pprint the result
 uv run python -m tools.search 39465  # ripgrep the mirror for a plugin ID (needs PLUGINS_DIR)
+uv run pytest                        # unit tests: tools/search.py + tools/extract.py
+uv run python -m evals.run_known_plugins        # golden-set check, deterministic facts only
+uv run python -m evals.run_known_plugins --llm  # same, plus one real model call per case
 ```
 
-Run these with `-m` (not a bare script path) — `tools/extract.py` imports
-`utils.nasl_patterns`, a sibling package, which only resolves when Python treats the
-repo root as the import root. `python tools/extract.py` puts `tools/` itself on
-`sys.path` instead and the import fails.
+Run the `tools`/`evals` module invocations with `-m` (not a bare script path) —
+`tools/extract.py` imports `utils.nasl_patterns`, a sibling package, which only
+resolves when Python treats the repo root as the import root. `python tools/extract.py`
+puts `tools/` itself on `sys.path` instead and the import fails.
 
-There is no test suite, lint config, or CI configured yet.
+There is no lint config or CI configured yet.
 
 ripgrep is a required system dependency for plugin lookup speed (plain `grep` over the
 ~309k-file mirror takes 30+ seconds; ripgrep takes 0–5s):

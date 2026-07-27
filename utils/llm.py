@@ -51,7 +51,6 @@ async def respond(prompt: str, on_delta=None) -> TechBrief:
     """
     started = time.monotonic()
     logger.info("llm request started model=%s prompt_chars=%d", MODEL, len(prompt))
-
     async with client.messages.stream(
         model=MODEL,
         max_tokens=8192,

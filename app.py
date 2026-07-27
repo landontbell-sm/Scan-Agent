@@ -29,7 +29,8 @@ extract_async = cl.make_async(extract)
 @cl.on_chat_start
 async def start():
     await cl.Message(
-        content="**AI Scan Assistant**\n\nEnter a Nessus plugin ID to look it up (e.g. `39465`)."
+        content="**Scan Tech " \
+        "Assistant**\n\nEnter a Nessus plugin ID to look it up (e.g. `39465`)."
     ).send()
 
 

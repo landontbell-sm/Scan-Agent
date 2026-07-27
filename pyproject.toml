@@ -10,3 +10,16 @@ dependencies = [
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+# Repo root must be the import root (same reason `python tools/extract.py`
+# fails but `python -m tools.extract` works - see CLAUDE.md's Commands
+# section) so `import tools.extract` resolves from anywhere pytest is run.
+pythonpath = ["."]
+asyncio_mode = "auto"
