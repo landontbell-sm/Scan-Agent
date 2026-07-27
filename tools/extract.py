@@ -4,11 +4,19 @@
 # shapes the result. Checked against test.nasl (CGI Generic Command
 # Execution, plugin 39465) as the ground truth for what real NASL looks like.
 
+import logging
+import time
+
 from utils import nasl_patterns as pat
+
+logger = logging.getLogger(__name__)
 
 
 def extract(path: str) -> dict:
     """Read a .nasl file and return its deterministic facts."""
+    started = time.monotonic()
+    logger.info("extract started path=%s", path)
+
     with open(path, "r") as f:
         raw = f.read()
 
@@ -22,7 +30,7 @@ def extract(path: str) -> dict:
     header, body = parts if len(parts) == 2 else (raw, raw)
 
     metadata = parse_metadata(header)
-    return {
+    result = {
         "metadata": metadata,
         "fp_signals": find_fp_signals(body),
         "severity": determine_severity(body, metadata["attributes"]),
@@ -30,6 +38,16 @@ def extract(path: str) -> dict:
         "body": body,
         "raw": raw,
     }
+
+    logger.info(
+        "extract done path=%s script_id=%s severity=%s detection_style=%s duration=%.2fs",
+        path,
+        metadata["script_id"],
+        result["severity"],
+        result["fp_signals"]["detection_style"],
+        time.monotonic() - started,
+    )
+    return result
 
 
 def parse_metadata(header: str) -> dict:

@@ -7,10 +7,13 @@
 # the FP risk. Everything else (name, severity, CVEs, solution text, the raw
 # source itself) is rendered by app.py directly from extract()'s output.
 
+import logging
 from pathlib import Path
 
 from utils.llm import respond
 from utils.models import TechBrief
+
+logger = logging.getLogger(__name__)
 
 _CHEATSHEET_PATH = Path(__file__).resolve().parent.parent / "utils" / "cheatsheet.md"
 
@@ -64,6 +67,12 @@ what fills in the fields that need real comprehension.
 """
 
 
-def explain_plugin(data: dict) -> TechBrief:
+async def explain_plugin(data: dict, on_delta=None) -> TechBrief:
     """Call the model on extract()'s output and return the tech_brief."""
-    return respond(build_prompt(data))
+    prompt = build_prompt(data)
+    logger.info(
+        "explain prompt built plugin_id=%s prompt_chars=%d",
+        data["metadata"]["script_id"],
+        len(prompt),
+    )
+    return await respond(prompt, on_delta=on_delta)
