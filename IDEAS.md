@@ -3,6 +3,7 @@
 - **Allow more inputs:** Allow the scan tech to upload more information about the client and
   their environment. Basically be able to input all of the information they see on Gravity.
     - Such as the clients website, or relevant information about the host(s)/environments(s)
+    - Allow for follow up question such as "is this plugin actual exploitable?"
 - **Produce Validation Commands:** Gather the information and injection from plugins and scan tech
   and use it to create validation commands (curl, grep, nmap, ect) that the scan tech can run themselves
   to validate the plugin findings and reproduce the Nessus scan in order to determine what

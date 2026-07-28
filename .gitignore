@@ -1,0 +1,20 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+*.license
+*.nasl
+*.lock
+*.tar.gz
+.chainlit/translations
+.env
+# Synthetic fixtures written for this repo (not real Tenable plugin source,
+# unlike the mirror) - tracked despite *.nasl above, same as test.nasl.
+!tests/fixtures/*.nasl
+!evals/known_plugins/plugins/*.nasl
