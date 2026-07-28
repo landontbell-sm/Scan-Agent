@@ -1,15 +1,5 @@
-# LLM call to produce scan tech explanation
-#
-# Assembles a prompt from tools/extract.py's output plus the NASL cheat
-# sheet, then calls utils/llm.py's seam. Deterministic facts are handed to
-# the model as ground truth (never regenerated) - the model reads the source
-# to judge the two things that need real comprehension: what it does and
-# the FP risk. Everything else (name, severity, CVEs, solution text, the raw
-# source itself) is rendered by app.py directly from extract()'s output.
-
 import logging
 from pathlib import Path
-
 from utils.llm import respond
 from utils.models import TechBrief
 
@@ -25,9 +15,7 @@ def _format_attributes(attributes: dict) -> str:
         f"- {name}: {value}" for name, values in attributes.items() for value in values
     )
 
-
 def build_prompt(data: dict) -> str:
-    """Assemble the prompt from extract()'s output dict."""
     metadata = data["metadata"]
     fp = data["fp_signals"]
     cheatsheet = _CHEATSHEET_PATH.read_text()
@@ -68,7 +56,6 @@ what fills in the fields that need real comprehension.
 
 
 async def explain_plugin(data: dict, on_delta=None) -> TechBrief:
-    """Call the model on extract()'s output and return the tech_brief."""
     prompt = build_prompt(data)
     logger.info(
         "explain prompt built plugin_id=%s prompt_chars=%d",

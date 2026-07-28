@@ -1,9 +1,3 @@
-# Regex extraction of plugin file content
-#
-# Patterns live in utils/nasl_patterns.py; this file just applies them and
-# shapes the result. Checked against test.nasl (CGI Generic Command
-# Execution, plugin 39465) as the ground truth for what real NASL looks like.
-
 import logging
 import time
 
@@ -20,12 +14,6 @@ def extract(path: str) -> dict:
     with open(path, "r") as f:
         raw = f.read()
 
-    # The description block always ends in exit(0); everything after is the
-    # plugin's runtime logic. A plain str.partition() can't tell "no match"
-    # apart from "matched, body is empty" - both give an empty body, and
-    # every body-derived signal below would then silently read as "absent"
-    # instead of "couldn't tell." Fall back to scanning the whole file rather
-    # than guess.
     parts = pat.EXIT_ZERO_RE.split(raw, maxsplit=1)
     header, body = parts if len(parts) == 2 else (raw, raw)
 
@@ -38,7 +26,6 @@ def extract(path: str) -> dict:
         "body": body,
         "raw": raw,
     }
-
     logger.info(
         "extract done path=%s script_id=%s severity=%s detection_style=%s duration=%.2fs",
         path,
@@ -48,7 +35,6 @@ def extract(path: str) -> dict:
         time.monotonic() - started,
     )
     return result
-
 
 def parse_metadata(header: str) -> dict:
     name = pat.NAME_RE.search(header)
@@ -85,18 +71,11 @@ def parse_metadata(header: str) -> dict:
         "cwe_ids": cwe_ids,
         "xrefs": xrefs,
         "cvss_vector": pat.unquote(cvss_vector.group(1)) if cvss_vector else None,
-        # attributes commonly includes: synopsis, description, solution,
-        # see_also, risk_factor - lifted verbatim, never regenerated.
         "attributes": attributes,
     }
 
-
 def find_fp_signals(body: str) -> dict:
     paranoia = pat.PARANOIA_RE.search(body)
-
-    # See docs/ARCHITECTURE.md: version/banner compares are FP-prone, a
-    # confirmed payload+response match is reliable. "unknown" (not a guess)
-    # when neither pattern is found, e.g. logic buried behind an include.
     is_version_check = bool(pat.VERSION_CHECK_RE.search(body))
     is_active_check = bool(pat.ACTIVE_CHECK_RE.search(body))
     if is_active_check:
@@ -113,25 +92,10 @@ def find_fp_signals(body: str) -> dict:
         "detection_style": detection_style,
     }
 
-
 def determine_severity(body: str, attributes: dict) -> str | None:
     tokens = {t for m in pat.SEVERITY_TOKEN_RE.findall(body) for t in m if t}
     if tokens:
         order = ["low", "medium", "high"]
         return max((pat.SEVERITY_FROM_TOKEN[t] for t in tokens), key=order.index)
-
-    # No security_*() call and no SECURITY_* constant in the body - fall
-    # back to the header's own risk_factor attribute rather than reporting
-    # no severity at all.
     risk_factor = attributes.get("risk_factor")
     return risk_factor[0].lower() if risk_factor else None
-
-
-if __name__ == "__main__":
-    import sys
-    from pathlib import Path
-    from pprint import pprint
-
-    default_path = Path(__file__).resolve().parent.parent / "test.nasl"
-    path = sys.argv[1] if len(sys.argv) > 1 else default_path
-    pprint(extract(str(path)))

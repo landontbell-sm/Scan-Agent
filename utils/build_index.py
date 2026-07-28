@@ -1,9 +1,3 @@
-# Maps the Plugins directory and turns it into a JSON file:
-# {
-#     "script_id": "plugin_path"
-# }
-# We may not need to do this with how much faster RipGrep is compared to Grep
-# The only reason I considered this is because Grep took 30s to run. RipGrep takes 0-3s
 import json
 import re
 import subprocess
