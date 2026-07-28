@@ -5,6 +5,7 @@ import time
 
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
+from phoenix.otel import register
 from pydantic import ValidationError
 
 from utils.models import TechBrief
@@ -13,15 +14,14 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Async client (rather than the sync one) so respond() can stream tokens back
-# to the caller as they're generated instead of blocking until the whole
-# tech_brief is done - see respond()'s on_delta parameter.
+tracer_provider = register(
+  project_name="scan-agent",
+  set_global_tracer_provider=False
+)
+tracer = tracer_provider.get_tracer(__name__)
+
 client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 MODEL = os.getenv("ANTHROPIC_LLM_MODEL")
-
-# output_config.format needs additionalProperties: false to constrain
-# generation to exactly this shape; model_json_schema() doesn't set that by
-# default. Built once at import time rather than per-call.
 _TECH_BRIEF_SCHEMA = TechBrief.model_json_schema()
 _TECH_BRIEF_SCHEMA["additionalProperties"] = False
 
@@ -41,7 +41,7 @@ SYSTEM_PROMPT = [
     }
 ]
 
-
+@tracer.chain
 async def respond(prompt: str, on_delta=None) -> TechBrief:
     """Stream a TechBrief out of the model.
 
@@ -54,9 +54,6 @@ async def respond(prompt: str, on_delta=None) -> TechBrief:
     async with client.messages.stream(
         model=MODEL,
         max_tokens=8192,
-        # Disabled rather than the Sonnet 5 default (adaptive): this task is
-        # read-and-quote, not multi-step math, and the tech is waiting live
-        # on the phone - the latency isn't worth it here.
         thinking={"type": "disabled"},
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
